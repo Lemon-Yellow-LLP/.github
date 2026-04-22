@@ -1,0 +1,81 @@
+name: PR-Agent
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+  statuses: write
+  checks: write
+
+jobs:
+  pr_agent:
+    if: ${{ github.event.sender.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    name: Run PR-Agent review
+    steps:
+      - uses: qodo-ai/pr-agent@v0.26
+        env:
+          OPENAI_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI.API_BASE: "https://openrouter.ai/api/v1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFIG.MODEL: "openrouter/anthropic/claude-sonnet-4"
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: "true"
+          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: "true"
+
+  score_gate:
+    needs: pr_agent
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: PR-Agent score gate   # required-check name in branch protection
+    steps:
+      - name: Read PR-Agent score from review comment
+        uses: actions/github-script@v7
+        env:
+          THRESHOLD: "7"
+        with:
+          script: |
+            const threshold = parseInt(process.env.THRESHOLD, 10);
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            // Latest PR-Agent review comment
+            const reviews = comments
+              .filter(c => c.user.type === 'Bot')
+              .filter(c => /PR Reviewer Guide|Estimated effort to review/i.test(c.body))
+              .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+
+            if (!reviews.length) {
+              core.setFailed('No PR-Agent review comment found. Comment `/review` on the PR to trigger one.');
+              return;
+            }
+
+            const body = reviews[0].body;
+
+            // Matches: "| Score | 7 |", "Score: 7", "Score: 7/10"
+            const match = body.match(/score[^\d\n]{0,20}(\d{1,2})\s*(?:\/\s*10)?/i);
+            if (!match) {
+              core.setFailed('Could not parse review score from PR-Agent comment.');
+              return;
+            }
+
+            const score = parseInt(match[1], 10);
+            core.notice(`PR-Agent review score: ${score} (threshold: ${threshold})`);
+
+            if (score < threshold) {
+              core.setFailed(
+                `PR-Agent score ${score}/10 is below the required ${threshold}/10. ` +
+                `Address the review suggestions, push a new commit, and the review will re-run.`
+              );
+            }
