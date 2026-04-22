@@ -1,10 +1,7 @@
 name: PR-Agent
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
-  issue_comment:
-    types: [created]
+  workflow_call:
 
 permissions:
   issues: write
@@ -33,7 +30,7 @@ jobs:
     needs: pr_agent
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    name: PR-Agent score gate   # required-check name in branch protection
+    name: PR-Agent score gate
     steps:
       - name: Read PR-Agent score from review comment
         uses: actions/github-script@v7
@@ -45,12 +42,11 @@ jobs:
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
-              repo:  context.repo.repo,
+              repo: context.repo.repo,
               issue_number: context.issue.number,
               per_page: 100,
             });
 
-            // Latest PR-Agent review comment
             const reviews = comments
               .filter(c => c.user.type === 'Bot')
               .filter(c => /PR Reviewer Guide|Estimated effort to review/i.test(c.body))
@@ -62,9 +58,8 @@ jobs:
             }
 
             const body = reviews[0].body;
-
-            // Matches: "| Score | 7 |", "Score: 7", "Score: 7/10"
             const match = body.match(/score[^\d\n]{0,20}(\d{1,2})\s*(?:\/\s*10)?/i);
+
             if (!match) {
               core.setFailed('Could not parse review score from PR-Agent comment.');
               return;
